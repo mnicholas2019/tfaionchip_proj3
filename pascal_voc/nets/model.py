@@ -81,7 +81,7 @@ class Model(nn.Module):
         out2, out2_branch = _branch(self.embedding2, x2_in)
         return out0, out1, out2
 
-    def init_weights(self, gpu=True):
+    def init_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
@@ -91,7 +91,7 @@ class Model(nn.Module):
                 m.bias.data.zero_()
         if self.backbone_pretrained is not None:
             logging.info('Loading backbone weights from {}'.format(self.backbone_pretrained))
-            self.backbone.load_weights(self.backbone_pretrained, gpu)
+            self.backbone.load_weights(self.backbone_pretrained)
 
     def load_darknet_weights(self, weights_path):
         import numpy as np
@@ -168,4 +168,3 @@ class Model(nn.Module):
                     last_conv = None
         print("Total ptr = ", ptr)
         print("real size = ", weights.shape)
-

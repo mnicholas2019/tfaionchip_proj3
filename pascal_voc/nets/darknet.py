@@ -11,7 +11,7 @@ def darknet(darknet_name):
         return darknet53
     else:
         raise Exception('darknet name is wrong')
-        
+
 
 
 class BasicBlock(nn.Module):
@@ -95,12 +95,12 @@ class DarkNet(nn.Module):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
 
-    def load_weights(self, pretrained, gpu=True):
+    def load_weights(self, pretrained):
         if isinstance(pretrained, str):
-            if gpu:
+            if torch.cuda.is_available():
                 self.load_state_dict(torch.load(pretrained))
             else:
-                self.load_state_dict(torch.load(pretrained,map_location=torch.device('cpu')))
+                self.load_state_dict(torch.load(pretrained, map_location="cpu"))
         else:
             raise Exception("darknet request a pretrained path. got [{}]".format(pretrained))
 

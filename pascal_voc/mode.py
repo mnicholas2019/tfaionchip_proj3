@@ -21,8 +21,7 @@ from nets.yolo_loss import YOLOLoss
 from common.utils import non_max_suppression, bbox_iou
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
-
-from prune_utils import *
+from prune_utils import pre_prune_weights, prune_weights_in_training
 
 def memory_usage_psutil():
     import psutil
@@ -34,26 +33,32 @@ def memory_usage_psutil():
 class Mode():
     pre_prune_weights = pre_prune_weights
     prune_weights_in_training = prune_weights_in_training
-
     def __init__(self, config, is_training):
         self.config = config
         self.is_training = is_training
-        use_gpu = config.use_gpu
+        if torch.cuda.is_available():
+            use_gpu = config.use_gpu
+        else:
+            use_gpu = False
         self.net = Model(self.config, is_training=self.is_training)
         if self.is_training:
             self.net.train(is_training)
         else:
             self.net.eval()
-
-        self.net.init_weights(gpu=use_gpu)
-        
+        if torch.cuda.is_available():
+            self.net.init_weights(gpu=use_gpu)
+        else:
+            self.net.init_weights()
         if self.is_training:
             self.optimizer = self._get_optimizer()
 
         if len(self.config.parallels) > 0:
             self.net = nn.DataParallel(self.net)
-            if use_gpu:
+            if torch.cuda.is_available():
                 self.net = self.net.cuda()
+            else:
+                self.net = self.net.cpu()
+
 
         self.yolo_loss = []
         for i in range(3):
@@ -63,10 +68,10 @@ class Mode():
 
         if config.pretrained_weights:
             logging.info("Load pretrained weights from {}".format(config.pretrained_weights))
-            if use_gpu:
+            if torch.cuda.is_available():
                 checkpoint = torch.load(config.pretrained_weights)
             else:
-                checkpoint = torch.load(config.pretrained_weights,map_location=torch.device('cpu'))
+                checkpoint = torch.load(config.pretrained_weights, map_location='cpu')
             state_dict = checkpoint['state_dict']
             self.net.load_state_dict(state_dict)
             self.epoch = checkpoint["epoch"] + 1
@@ -79,12 +84,7 @@ class Mode():
             logging.info("Loading official weights from {}".format(config.official_weights))
             self.net.load_state_dict(torch.load(config.official_weights))
             self.global_step = 20000
-            
-        self.pre_prune_weights()
-        
-    
-    
-
+            self.pre_prune_weights()
     def _get_optimizer(self):
             optimizer = None
 
@@ -123,8 +123,8 @@ class Mode():
                                     nesterov=(self.config.optimizer == "nesterov"))
 
             return optimizer
-        
-    
+
+
     def train(self, train_dataloader, val_dataloader):
 
         # Optimizer
@@ -142,17 +142,21 @@ class Mode():
                 param_group['lr'] = lr
 
             return lr
-                
+
         summary = SummaryWriter(self.config.write)
 
         logging.info("Start training")
         while self.global_step < self.config.max_iter:
+            print('max', self.config.max_iter)
             #train step
             train_dataloader.dataset.random_shuffle()
             train_dataloader.dataset.update(self.global_step)
             for step, samples in enumerate(train_dataloader):
                 images, labels = samples['image'], samples['label']
-                images = images.cuda()
+                if torch.cuda.is_available():
+                    images = images.cuda()
+                else:
+                    images = images.cpu()
                 image_size = images.size(2)
                 batch_size = images.size(0)
                 start_time = time.time()
@@ -168,10 +172,10 @@ class Mode():
                     for j, l in enumerate(_loss_item):
                         losses[j].append(l)
                 losses = [sum(l) for l in losses]
-                loss = losses[0]                
+                loss = losses[0]
                 loss.backward()
                 self.optimizer.step()
-                # prune weights
+                #prune init_weights
                 self.prune_weights_in_training()
                 #memory_usage_psutil()
                 if step >= 0 and step % 10 == 0:
@@ -186,13 +190,13 @@ class Mode():
                     for i, name in enumerate(losses_name):
                         v = _loss if i == 0 else losses[i]
                         summary.add_scalar(name, v, self.global_step)
-                    
+
                     if step > 0 and step % 1000 == 0:
                         checkpoint_path = os.path.join(self.config.save_dir, "model_backup.pth")
                         checkpoint = {'state_dict':self.net.state_dict(), 'epoch': self.epoch, "global step": self.global_step}
                         torch.save(checkpoint, checkpoint_path)
                         logging.info("Model checkpoint saved to {}".format(checkpoint_path))
-                
+
                 self.global_step += 1
 
             checkpoint_path = os.path.join(self.config.save_dir, "model_{}.pth".format(self.epoch))
@@ -230,7 +234,7 @@ class Mode():
     #    with torch.no_grad():
     #        outputs = self.net(inputs)
     #        output = self.yolo_loss(outputs)
-    #        detections = 
+    #        detections =
 
 
 
@@ -285,7 +289,7 @@ class Mode():
         with open(save_path, "w") as f:
             json.dump(coco_result, f, sort_keys=True, indent=4, separators=(',', ':'))
         logging.info('Save result in {}'.format(save_path))
-        
+
         logging.info('Using COCO APi to evaluate')
         cocoGt = COCO(self.config.annotation)
         cocoDt = cocoGt.loadRes(save_path)
@@ -299,7 +303,7 @@ class Mode():
         logging.info('Start Evaling')
         results = {}
 
-        
+
         def voc_ap(rec, prec, use_07_metric=False):
             """ ap = voc_ap(rec, prec, [use_07_metric])
             Compute VOC AP given precision and recall.
@@ -360,7 +364,7 @@ class Mode():
 
                     rec = tpc / n_gt
                     prec = tpc / (tpc + fpc)
-                    
+
                     _ap = voc_ap(rec, prec)
                     ap.append(_ap)
                     AP[c] = _ap
@@ -368,7 +372,7 @@ class Mode():
             return mAP, AP
 
 
-        
+
         def parse_rec(imagename, classes):
             filename = imagename.replace('jpg', 'xml')
             tree = ET.parse(filename)
@@ -380,9 +384,9 @@ class Mode():
                     continue
                 cls_id = classes.index(cls)
                 xmlbox = obj.find('bndbox')
-                obj = [float(xmlbox.find('xmin').text), 
-                       float(xmlbox.find('xmax').text), 
-                       float(xmlbox.find('ymin').text), 
+                obj = [float(xmlbox.find('xmin').text),
+                       float(xmlbox.find('xmax').text),
+                       float(xmlbox.find('ymin').text),
                        float(xmlbox.find('ymax').text), cls_id]
                 objects.append(obj)
             return np.asarray(objects)
@@ -407,6 +411,7 @@ class Mode():
                     output_list.append(self.yolo_loss[i](outputs[i]))
                 output = torch.cat(output_list, 1)
                 batch_detections = non_max_suppression(output, self.config.num_classes, conf_thres=0.001, nms_thres=0.4)
+
             for idx, detections in enumerate(batch_detections):
                 detections = detections.cpu().numpy()
                 image_path = image_paths[idx]
@@ -434,7 +439,7 @@ class Mode():
                 else:
                     detections = detections[np.argsort(-detections[:, 4])]
                     detected = []
-                    
+
                     for *pred_box, conf, cls_conf, cls_pred in detections:
                         pred_box = torch.FloatTensor(pred_box).view(1, -1)
                         pred_box[:, 2:] = pred_box[:, 2:] - pred_box[:, :2]
@@ -449,6 +454,7 @@ class Mode():
                             correct.append(0)
                         pred_list.append(int(cls_pred))
                         conf_list.append(float(conf))
+
         results['correct'] = correct
         results['conf'] = conf_list
         results['pred_cls'] = pred_list
@@ -467,7 +473,7 @@ class Mode():
 
 
 
-            
+
 
 
 
@@ -482,10 +488,12 @@ class Mode():
         image = np.transpose(image, (0, 3, 1, 2))
         image = image.astype(np.float32)
         image = torch.from_numpy(image)
-        
+
         start_time = time.time()
         if torch.cuda.is_available():
             image = image.cuda()
+        else:
+            image = image.cpu()
         with torch.no_grad():
             outputs = self.net(image)
             output_list = []
@@ -511,5 +519,3 @@ class Mode():
                     image_origin, caption, (x1,y1+15), cv2.FONT_HERSHEY_SIMPLEX,0.6,(255,255,255),2
                 )
             return image_origin, spand_time
-
-    

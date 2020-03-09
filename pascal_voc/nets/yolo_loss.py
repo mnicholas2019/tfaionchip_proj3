@@ -67,15 +67,24 @@ class YOLOLoss(nn.Module):
             output = torch.cat((pred_boxes.view(bs, -1, 4) * _scale,
                                 conf.view(bs, -1, 1), pred_cls.view(bs, -1, self.num_classes)), -1)
             return output.data
-        
+
         else:
-            n_obj, mask, noobj_mask, tx, ty, tw, th, tconf, tcls, scales = self.get_target(targets, scaled_anchors,
-                                                                           in_w, in_h, pred_boxes.cpu().detach(), 
-                                                                           self.ignore_threshold)
-            mask, noobj_mask = mask.cuda(), noobj_mask.cuda()
-            tx, ty, tw, th = tx.cuda(), ty.cuda(), tw.cuda(), th.cuda()
-            tconf, tcls = tconf.cuda(), tcls.cuda()
-            scales = scales.cuda()
+            if torch.cuda.is_available():
+                n_obj, mask, noobj_mask, tx, ty, tw, th, tconf, tcls, scales = self.get_target(targets, scaled_anchors,
+                                                                               in_w, in_h, pred_boxes.cuda().detach(),
+                                                                               self.ignore_threshold)
+                mask, noobj_mask = mask.cuda(), noobj_mask.cuda()
+                tx, ty, tw, th = tx.cuda(), ty.cuda(), tw.cuda(), th.cuda()
+                tconf, tcls = tconf.cuda(), tcls.cuda()
+                scales = scales.cuda()
+            else:
+                n_obj, mask, noobj_mask, tx, ty, tw, th, tconf, tcls, scales = self.get_target(targets, scaled_anchors,
+                                                                               in_w, in_h, pred_boxes.cpu().detach(),
+                                                                               self.ignore_threshold)
+                mask, noobj_mask = mask.cpu(), noobj_mask.cpu()
+                tx, ty, tw, th = tx.cpu(), ty.cpu(), tw.cpu(), th.cpu()
+                tconf, tcls = tconf.cpu(), tcls.cpu()
+                scales = scales.cpu()
             #  losses.
             loss_x = self.mse_loss(x * scales, tx * scales) / (2 * n_obj)
             loss_y = self.mse_loss(y * scales, ty * scales) / (2 * n_obj)
@@ -88,10 +97,14 @@ class YOLOLoss(nn.Module):
             loss = loss_x * self.lambda_xy + loss_y * self.lambda_xy + \
                 loss_w * self.lambda_wh + loss_h * self.lambda_wh + \
                 loss_conf * self.lambda_conf + loss_cls * self.lambda_cls
-            
+
             if global_step is not None and global_step < 12800:
-                axy = torch.zeros_like(x, requires_grad=False).cuda()
-                awh = torch.zeros_like(w, requires_grad=False).cuda()
+                if torch.cuda.is_available():
+                    axy = torch.zeros_like(x, requires_grad=False).cuda()
+                    awh = torch.zeros_like(w, requires_grad=False).cuda()
+                else:
+                    axy = torch.zeros_like(x, requires_grad=False).cpu()
+                    awh = torch.zeros_like(w, requires_grad=False).cpu()
                 axy.fill_(0.5)
                 a_loss = (self.mse_loss(x, axy) + self.mse_loss(y, axy) + self.mse_loss(w, awh) + self.mse_loss(h, awh)) / (2 * n_obj)
                 loss = loss + 0.1 * a_loss
@@ -101,7 +114,7 @@ class YOLOLoss(nn.Module):
 
             return loss, loss_x.item(), loss_y.item(), loss_w.item(),\
                 loss_h.item(), loss_conf.item(), loss_cls.item(), anchor_loss
-    
+
     def get_target(self, target, anchors, in_w, in_h, pred_box, ignore_threshold):
         bs = target.size(0)
         n_obj = 0

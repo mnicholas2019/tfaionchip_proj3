@@ -52,9 +52,7 @@ class InferenceConfig(Config):
 
 
 def train(config):
-
     model = Mode(config, True)
-
     train_dataloader = torch.utils.data.DataLoader(COCODataset(config.train_list, config.image_size, True, config.batch_size, config.jitter, shuffle=True, seed=config.seed, random=True, num_workers=config.num_workers),
                                                    batch_size = config.batch_size, shuffle=False, num_workers=config.num_workers, pin_memory=True)
 
