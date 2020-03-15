@@ -14,7 +14,7 @@ class Config():
     #learning rate
     learning_rate = 0.001
     burn_in = 1000
-    freeze_backbone = True
+    freeze_backbone = False
     decay_gamma = 0.1
     decay_step = [400000, 450000]
     optimizer = 'adam'

@@ -21,7 +21,7 @@ from nets.yolo_loss import YOLOLoss
 from common.utils import non_max_suppression, bbox_iou
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
-from prune_utils import pre_prune_weights, prune_weights_in_training
+from prune_utils import pre_prune_weights, prune_weights_in_training, prune_weights_in_training_threshold
 
 def memory_usage_psutil():
     import psutil
@@ -33,6 +33,7 @@ def memory_usage_psutil():
 class Mode():
     pre_prune_weights = pre_prune_weights
     prune_weights_in_training = prune_weights_in_training
+    prune_weights_in_training_threshold = prune_weights_in_training_threshold
     def __init__(self, config, is_training):
         self.config = config
         self.is_training = is_training
@@ -161,6 +162,7 @@ class Mode():
                 batch_size = images.size(0)
                 start_time = time.time()
                 lr = adjust_learning_rate(self.optimizer, self.config, self.global_step)
+                print('lr: ', lr)
                 self.optimizer.zero_grad()
                 outputs = self.net(images)
                 losses_name = ["total_loss", "x", "y", "w", "h", "conf", "cls", "a"]
@@ -174,9 +176,40 @@ class Mode():
                 losses = [sum(l) for l in losses]
                 loss = losses[0]
                 loss.backward()
+
+                '''
+                c=0
+                state_dict = self.net.state_dict()
+                for key, value in state_dict.items():
+                    if ("weight" in key or "bias" in key): 
+                        if c == 10:
+                            print('\n\n\nBefore optimizer.step()', state_dict[key], '\n\n\n\n')
+                        c+=1
+                '''
+                
+                state_dict = self.net.state_dict()
+                for key, value in state_dict.items():
+                    if ("weight" in key or "bias" in key):
+                        print('non zero: ', tf.math.count_nonzero(value))
+
                 self.optimizer.step()
+                '''
+                c=0
+                state_dict = self.net.state_dict()
+                for key, value in state_dict.items():
+                    if ("weight" in key or "bias" in key): 
+                        if c == 10:
+                            print('\n\n\nAfter optimzer.step()', state_dict[key], '\n\n\n\n')
+                        c+=1
+                '''
+
                 #prune init_weights
                 self.prune_weights_in_training()
+                state_dict = self.net.state_dict()
+                for key, value in state_dict.items():
+                    if ("weight" in key or "bias" in key):
+                        print('non zero: ', tf.math.count_nonzero(value))
+
                 #memory_usage_psutil()
                 if step >= 0 and step % 10 == 0:
                     _loss = loss.item()
@@ -399,7 +432,11 @@ class Mode():
         correct = []
         conf_list = []
         pred_list = []
+        counter = 0
         for step, samples in enumerate(val_dataset):
+            if counter > 10:
+                break
+            counter = counter  + 1
             images, labels = samples['image'], samples['label']
             image_paths, origin_sizes = samples['image_path'], samples['origin_size']
 
